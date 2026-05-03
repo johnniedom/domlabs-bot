@@ -49,17 +49,12 @@ fi
 
 banner "Installing domlabs-bot from ${SRC_PATH}"
 
-# Run pipx, stream stdout/stderr through a filter that drops the emoji line.
-# `LC_ALL=C` keeps ripgrep-equivalents matching reliably on terminals with
-# odd locales.
+# Stream pipx's combined stdout/stderr through a filter that drops the
+# `done! ✨ 🌟 ✨` celebration line. The emojis live on that single line, so
+# killing it removes them all.
 set +e
 $PIPX install -e "$SRC_PATH" --force 2>&1 | \
-  awk '
-    /^[[:space:]]*done!/ { next }
-    /✨/ { next }
-    /🌟/ { next }
-    { print "  " $0 }
-  '
+  awk '/^[[:space:]]*done!/ { next } { print "  " $0 }'
 exit_code=${PIPESTATUS[0]}
 set -e
 

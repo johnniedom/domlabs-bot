@@ -40,8 +40,7 @@ function Write-Banner($msg) {
 
 # --- 1. Ensure pipx is available ----------------------------------------
 
-$pipxCmd = Get-Command pipx -ErrorAction SilentlyContinue
-if (-not $pipxCmd) {
+if (-not (Get-Command pipx -ErrorAction SilentlyContinue)) {
     Write-Banner "pipx not found — installing it first"
     Write-Step "python -m pip install --user pipx"
     python -m pip install --user pipx 2>&1 | Out-Null
@@ -49,26 +48,30 @@ if (-not $pipxCmd) {
     python -m pipx ensurepath 2>&1 | Out-Null
     Write-Host ""
     Write-Host "  pipx is installed but its scripts directory may not be on PATH yet." -ForegroundColor Yellow
-    Write-Host "  If `domlabs-bot` doesn't resolve after this script finishes," -ForegroundColor Yellow
+    Write-Host "  If 'domlabs-bot' doesn't resolve after this script finishes," -ForegroundColor Yellow
     Write-Host "  open a new terminal and try again." -ForegroundColor Yellow
     Write-Host ""
-    $pipxCmd = "python -m pipx"
-} else {
-    $pipxCmd = "pipx"
 }
 
-# --- 2. Run pipx install with output filtered ---------------------------
+# --- 2. Run pipx install, filter pipx's emoji line out as it streams ----
 
 Write-Banner "Installing domlabs-bot from $Path"
 
-$installOutput = & cmd /c "$pipxCmd install -e `"$Path`" --force 2>&1"
-$exitCode = $LASTEXITCODE
+# Force UTF-8 so emoji-bearing lines come through intact and our regex matches.
+$prevEnc = [Console]::OutputEncoding
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-foreach ($line in $installOutput) {
-    # Strip pipx's emoji "done!" line and the emojis themselves.
-    if ($line -match "^\s*done!" -or $line -match "✨" -or $line -match "🌟") { continue }
+# Always invoke pipx via `python -m pipx` — works regardless of PATH state.
+& python -m pipx install -e $Path --force 2>&1 | ForEach-Object {
+    $line = "$_"
+    # Skip pipx's celebration line. The emojis live on this single line, so
+    # dropping it kills them all.
+    if ($line -match '^\s*done!') { return }
     Write-Step $line
 }
+$exitCode = $LASTEXITCODE
+
+[Console]::OutputEncoding = $prevEnc
 
 if ($exitCode -ne 0) {
     Write-Host ""

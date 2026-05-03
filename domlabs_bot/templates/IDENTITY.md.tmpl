@@ -1,0 +1,12 @@
+# Identity
+
+This file describes the assistant's identity. The runtime parses
+`name` and `vibe` to template the system prompt — keep those keys
+present even if the values are blank.
+
+- name: {{ASSISTANT_NAME}}
+- vibe: {{VIBE}}
+
+## Notes
+Add anything else you want the assistant to internalise about itself
+below this line — voice, principles, things it should never do.

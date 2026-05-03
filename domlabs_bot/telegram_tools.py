@@ -47,6 +47,45 @@ async def _upload(endpoint: str, file_field: str, path: Path, caption: str | Non
 
 
 @tool(
+    "send_message",
+    "Send a plain-text message to the user over Telegram as a SEPARATE "
+    "message. Your normal reply is already routed to Telegram — only call "
+    "this tool when you want to push an ADDITIONAL message (e.g. a "
+    "follow-up status, an interim 'still working...' nudge, or a deferred "
+    "answer). Hard limit: 4096 chars per call. For longer text use "
+    "send_code_as_file instead.",
+    {"text": str, "silent": bool},
+)
+async def send_message(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        text = args.get("text") or ""
+        if not text.strip():
+            raise ValueError("text is empty")
+        if len(text) > 4096:
+            raise ValueError(
+                f"text exceeds Telegram's 4096-char per-message limit "
+                f"({len(text)} chars). Split into multiple calls or use "
+                f"send_code_as_file for the long content."
+            )
+        data: dict[str, str] = {
+            "chat_id": str(config.OWNER_USER_ID),
+            "text": text,
+        }
+        if args.get("silent"):
+            data["disable_notification"] = "true"
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{_api_base()}/sendMessage", data=data)
+        resp.raise_for_status()
+        return {"content": [{"type": "text", "text": f"sent message ({len(text)} chars)"}]}
+    except Exception as e:
+        log.exception("send_message failed")
+        return {
+            "content": [{"type": "text", "text": f"failed to send message: {e}"}],
+            "isError": True,
+        }
+
+
+@tool(
     "send_file",
     "Send a file from disk to the user over Telegram. Use for PDFs, docs, "
     "archives, or any artifact the user should receive as an attachment. "
@@ -125,5 +164,5 @@ async def send_code_as_file(args: dict[str, Any]) -> dict[str, Any]:
 telegram_mcp_server = create_sdk_mcp_server(
     name="telegram",
     version="1.0.0",
-    tools=[send_file, send_photo, send_code_as_file],
+    tools=[send_message, send_file, send_photo, send_code_as_file],
 )

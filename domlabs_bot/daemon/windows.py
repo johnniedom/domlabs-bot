@@ -9,6 +9,8 @@ which is the practical floor for a Python 3.10+ install.
 """
 from __future__ import annotations
 
+import getpass
+import os
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,23 @@ from textwrap import dedent
 from .. import paths
 
 TASK_NAME = "domlabs-bot"
+
+
+def _current_user() -> str:
+    """Return the active user as ``DOMAIN\\username`` (or just ``username``).
+
+    Task Scheduler XML's ``<UserId>`` field needs a real, resolvable account
+    identifier — environment-variable placeholders like ``%USERNAME%`` are
+    NOT expanded by ``schtasks /Create /XML`` and produce
+    "No mapping between account names and security IDs was done."
+    """
+    username = (os.environ.get("USERNAME") or "").strip()
+    if not username:
+        username = getpass.getuser()
+    domain = (os.environ.get("USERDOMAIN") or "").strip()
+    if domain and domain.upper() != username.upper():
+        return f"{domain}\\{username}"
+    return username
 
 
 def _python_exe() -> str:
@@ -35,10 +54,29 @@ def _bot_module_args() -> list[str]:
 
 def _xml_for_task() -> str:
     args = _bot_module_args()
-    program = args[0]
-    arguments = " ".join(f'"{a}"' if " " in a else a for a in args[1:])
     workdir = paths.root()
-    user = "%USERNAME%"
+    user = _current_user()
+
+    # Wrap via `cmd /c` with explicit redirections. Without this, a Task
+    # Scheduler-spawned process inherits null/detached stdio handles —
+    # which then breaks the Claude Agent SDK's subprocess pipe creation
+    # (manifests as "Control request timeout: initialize"). Routing
+    # stdin from NUL and stdout/stderr to a log file gives our bridge
+    # real handles to inherit, so child pipes work the same as foreground.
+    inner_quoted = " ".join(f'"{a}"' if " " in a else a for a in args)
+    daemon_log = paths.logs_dir() / "daemon.out.log"
+    program = "cmd"
+    # Build the cmd /c argument string, then XML-escape it for the <Arguments>
+    # element. Special chars in shell redirection (`<`, `>`, `&`, `"`) must
+    # become their XML entity forms or schtasks will reject the file.
+    raw_arguments = f'/c "{inner_quoted} <NUL >>"{daemon_log}" 2>&1"'
+    arguments = (
+        raw_arguments.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
     return dedent(
         f"""\
         <?xml version="1.0" encoding="UTF-16"?>

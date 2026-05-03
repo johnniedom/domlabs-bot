@@ -35,6 +35,15 @@ def _cmd_start(args: argparse.Namespace) -> int:
         except Exception as e:
             print(f"daemon install failed: {e}", file=sys.stderr)
             return 1
+        # The help text promises "install + start as a service" — actually
+        # kick the task off now so the user doesn't have to wait for the next
+        # logon. Failure here is non-fatal: the task is registered and will
+        # fire automatically on next login regardless.
+        try:
+            print(d.start())
+        except Exception as e:
+            print(f"daemon registered, but immediate start failed: {e}", file=sys.stderr)
+            print("It'll auto-start on your next login.", file=sys.stderr)
         return 0
     # Foreground.
     from . import runtime

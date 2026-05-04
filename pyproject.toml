@@ -51,9 +51,6 @@ domlabs-bot = "domlabs_bot.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["domlabs_bot"]
 
-[tool.hatch.build.targets.wheel.force-include]
-"domlabs_bot/templates" = "domlabs_bot/templates"
-
 [tool.hatch.build.targets.sdist]
 include = [
     "/domlabs_bot",

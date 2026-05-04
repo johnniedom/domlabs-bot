@@ -94,6 +94,29 @@ Telegram ──► python-telegram-bot poller ──► SessionManager ──►
 - The agent has Telegram-aware tools (`mcp__telegram__send_file`,
   `send_photo`, `send_code_as_file`) for delivering large/binary results.
 
+## MCP servers
+
+The bot ships with one in-process MCP server (`telegram`, exposing the
+send-file/photo/code tools above) and **inherits every other MCP server
+you've registered with Claude Code**. The session is created with
+`setting_sources=["user", "project", "local"]`, so anything in your
+`claude mcp list` is available inside Telegram conversations.
+
+To add more — e.g. Playwright, GitHub, Linear, your own — register them
+the normal way:
+
+```bash
+claude mcp add playwright --scope user -- npx @playwright/mcp@latest
+claude mcp list                    # confirm it's connected
+domlabs-bot stop && domlabs-bot start --daemon   # restart so the bot picks it up
+```
+
+> **Security note.** Whatever MCP servers you have registered are reachable
+> via your phone over Telegram. If you've connected MCPs that hold tokens
+> (GitHub PATs, Linear keys, internal company servers), the owner of this
+> bot can drive them. Audit `claude mcp list` before running `start`, and
+> keep `OWNER_USER_ID` correct so only you can talk to the bot.
+
 ## Persona — bring your own
 
 `init` scaffolds four files under `~/.domlabs-bot/` you can edit by hand:

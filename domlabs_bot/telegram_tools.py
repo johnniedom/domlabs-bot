@@ -5,6 +5,7 @@ or image (PDFs, screenshots, long logs, generated artifacts) than inline.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any
@@ -16,13 +17,28 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-# Long-lived httpx client. Per-call `async with httpx.AsyncClient()` was
-# bricking on Windows with "All connection attempts failed" because every
-# tool call did a fresh DNS+TCP+TLS handshake; transient v6/firewall blips
-# turned into hard tool failures. A module-level client keeps the pool warm
-# and `AsyncHTTPTransport(retries=3)` rides through transient connect
-# failures the way PTB's own client does.
+# Long-lived httpx client + a serialization lock. Two separate problems
+# cooperate here:
+#
+#   (1) Per-call `async with httpx.AsyncClient()` paid a fresh DNS+TCP+TLS
+#       handshake every time, which intermittently bricked on Windows with
+#       "All connection attempts failed" on transient v6/firewall blips.
+#       Solved by a module-level client + AsyncHTTPTransport(retries=3).
+#
+#   (2) Agents tend to fire these tools in PARALLEL ("send 10 messages"
+#       turns into ten concurrent `send_message` calls). Telegram caps each
+#       chat at ~1 msg/sec and rejects the excess at the TCP layer, which
+#       httpcore also reports as "All connection attempts failed". Pool
+#       reuse alone does not solve that; we need to serialize.
+#
+# `_send_lock` ensures only one Bot API POST is in flight at a time and a
+# `MIN_INTERVAL_SECONDS` floor keeps us under the per-chat limit. 429s
+# from Telegram are honored via `Retry-After`.
 _client: httpx.AsyncClient | None = None
+_send_lock = asyncio.Lock()
+_last_send_at: float = 0.0
+MIN_INTERVAL_SECONDS = 1.05  # Telegram per-chat limit is 1/sec; +50ms slack.
+MAX_429_RETRIES = 3
 
 
 def _client_once() -> httpx.AsyncClient:
@@ -39,6 +55,36 @@ def _api_base() -> str:
     return f"https://api.telegram.org/bot{config.BOT_TOKEN}"
 
 
+async def _post_throttled(url: str, **kwargs: Any) -> httpx.Response:
+    """POST under a global lock with a 1/sec floor + Retry-After honoring.
+
+    Serializes all Telegram Bot API writes from the MCP tools. Without this
+    the agent's tendency to fan-out tool calls trips Telegram's flood limit.
+    """
+    global _last_send_at
+    client = _client_once()
+    async with _send_lock:
+        now = asyncio.get_event_loop().time()
+        wait = MIN_INTERVAL_SECONDS - (now - _last_send_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        for attempt in range(MAX_429_RETRIES + 1):
+            resp = await client.post(url, **kwargs)
+            _last_send_at = asyncio.get_event_loop().time()
+            if resp.status_code != 429:
+                return resp
+            retry_after = float(resp.headers.get("Retry-After", "1"))
+            log.warning(
+                "telegram 429 on %s — sleeping %.1fs (attempt %d/%d)",
+                url.rsplit("/", 1)[-1],
+                retry_after,
+                attempt + 1,
+                MAX_429_RETRIES,
+            )
+            await asyncio.sleep(retry_after + 0.1)
+        return resp
+
+
 def _resolve(path_str: str) -> Path:
     p = Path(path_str).expanduser()
     if not p.is_absolute():
@@ -53,9 +99,8 @@ async def _upload(endpoint: str, file_field: str, path: Path, caption: str | Non
     data = {"chat_id": str(config.OWNER_USER_ID)}
     if caption:
         data["caption"] = caption[:1024]
-    client = _client_once()
     with path.open("rb") as fh:
-        resp = await client.post(
+        resp = await _post_throttled(
             f"{_api_base()}/{endpoint}",
             data=data,
             files={file_field: (path.name, fh)},
@@ -71,7 +116,9 @@ async def _upload(endpoint: str, file_field: str, path: Path, caption: str | Non
     "this tool when you want to push an ADDITIONAL message (e.g. a "
     "follow-up status, an interim 'still working...' nudge, or a deferred "
     "answer). Hard limit: 4096 chars per call. For longer text use "
-    "send_code_as_file instead.",
+    "send_code_as_file instead. ALWAYS call sequentially (await each one) "
+    "— never fan-out parallel calls. Telegram caps a single chat at 1 "
+    "msg/sec and will drop excess sends.",
     {"text": str, "silent": bool},
 )
 async def send_message(args: dict[str, Any]) -> dict[str, Any]:
@@ -91,8 +138,7 @@ async def send_message(args: dict[str, Any]) -> dict[str, Any]:
         }
         if args.get("silent"):
             data["disable_notification"] = "true"
-        client = _client_once()
-        resp = await client.post(f"{_api_base()}/sendMessage", data=data)
+        resp = await _post_throttled(f"{_api_base()}/sendMessage", data=data)
         resp.raise_for_status()
         return {"content": [{"type": "text", "text": f"sent message ({len(text)} chars)"}]}
     except Exception as e:

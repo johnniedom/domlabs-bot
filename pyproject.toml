@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "domlabs-bot"
-version = "0.1.0"
+version = "0.1.2"
 description = "Use Claude Code from your phone via Telegram. Multi-project sessions, owner-gated, customizable persona."
 readme = "README.md"
 license = "MIT"

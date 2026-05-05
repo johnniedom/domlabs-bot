@@ -16,6 +16,24 @@ from . import config
 
 log = logging.getLogger(__name__)
 
+# Long-lived httpx client. Per-call `async with httpx.AsyncClient()` was
+# bricking on Windows with "All connection attempts failed" because every
+# tool call did a fresh DNS+TCP+TLS handshake; transient v6/firewall blips
+# turned into hard tool failures. A module-level client keeps the pool warm
+# and `AsyncHTTPTransport(retries=3)` rides through transient connect
+# failures the way PTB's own client does.
+_client: httpx.AsyncClient | None = None
+
+
+def _client_once() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0),
+            transport=httpx.AsyncHTTPTransport(retries=3),
+        )
+    return _client
+
 
 def _api_base() -> str:
     return f"https://api.telegram.org/bot{config.BOT_TOKEN}"
@@ -35,13 +53,13 @@ async def _upload(endpoint: str, file_field: str, path: Path, caption: str | Non
     data = {"chat_id": str(config.OWNER_USER_ID)}
     if caption:
         data["caption"] = caption[:1024]
-    async with httpx.AsyncClient(timeout=120) as client:
-        with path.open("rb") as fh:
-            resp = await client.post(
-                f"{_api_base()}/{endpoint}",
-                data=data,
-                files={file_field: (path.name, fh)},
-            )
+    client = _client_once()
+    with path.open("rb") as fh:
+        resp = await client.post(
+            f"{_api_base()}/{endpoint}",
+            data=data,
+            files={file_field: (path.name, fh)},
+        )
     resp.raise_for_status()
     return resp.json()
 
@@ -73,8 +91,8 @@ async def send_message(args: dict[str, Any]) -> dict[str, Any]:
         }
         if args.get("silent"):
             data["disable_notification"] = "true"
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(f"{_api_base()}/sendMessage", data=data)
+        client = _client_once()
+        resp = await client.post(f"{_api_base()}/sendMessage", data=data)
         resp.raise_for_status()
         return {"content": [{"type": "text", "text": f"sent message ({len(text)} chars)"}]}
     except Exception as e:
